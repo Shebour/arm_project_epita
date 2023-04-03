@@ -13,7 +13,7 @@ def init_board(tty: str):
 
 
 def generate_key(board: Any):
-    header = b"GENKEY\x04"
+    header = b"GEN32"
     print(header)
     board.write(header)
 

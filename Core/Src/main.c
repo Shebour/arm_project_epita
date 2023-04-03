@@ -28,6 +28,10 @@
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PDF */
 enum STATE { IDLE = 0, WAITING, COMMUNICATING, PROCESSING };
+struct __attribute__((__packed__)) header {
+  char cmd[3];
+  int payload_length;
+};
 /* USER CODE END PDF */
 
 /* Private define ------------------------------------------------------------*/
@@ -75,6 +79,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
   index = !index;
   huart_cb = huart; // save UART pour transmission
   HAL_UART_Receive_DMA(huart, &data[64 * index], 64);
+  state = COMMUNICATING;
 }
 
 // callback de fin de timer
