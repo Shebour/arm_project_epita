@@ -5,7 +5,7 @@ from Crypto.Cipher import AES
 
 def init_board(tty: str):
     try:
-        board = serial.Serial(tty, baudrate=115200)
+        board = serial.Serial(tty, baudrate=115200, bytesize=8)
     except:
         print(f"Error initialization board: {tty}")
         exit(1)
@@ -13,7 +13,7 @@ def init_board(tty: str):
 
 
 def generate_key(board: Any):
-    header = b"GEN0"
+    header = b"GEN000"
     board.write(header)
 
 

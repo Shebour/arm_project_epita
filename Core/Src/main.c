@@ -60,7 +60,8 @@ enum STATE state = IDLE;
 static int index = 0;
 static int recv = 0;
 static UART_HandleTypeDef *huart_cb;
-static uint8_t data[128] = {0};
+static uint8_t header_str[7] = {0};
+static uint8_t data[129] = {0};
 struct header *head;
 
 /* USER CODE END PV */
@@ -116,41 +117,18 @@ int generate_key() {
   // flash_write(0x08060000, key);
   return 0;
 }
-void usart_rx_check(void) {
-  static size_t old_pos;
-  size_t pos;
-
-  /* Calculate current position in buffer */
-  pos = ARRAY_LEN(huart_cb->pRxBuffPtr) -
-        LL_DMA_GetDataLength(DMA1, LL_DMA_STREAM_1);
-  if (pos != old_pos) {  /* Check change in received data */
-    if (pos > old_pos) { /* Current position is over previous one */
-      /* We are in "linear" mode, case P1, P2, P3 */
-      /* Process data directly by subtracting "pointers" */
-      usart_process_data(&usart_rx_dma_buffer[old_pos], pos - old_pos);
-    } else {
-      /* We are in "overflow" mode, case P4 */
-      /* First process data to the end of buffer */
-      usart_process_data(&usart_rx_dma_buffer[old_pos],
-                         ARRAY_LEN(usart_rx_dma_buffer) - old_pos);
-      /* Continue with beginning of buffer */
-      usart_process_data(&usart_rx_dma_buffer[0], pos);
-    }
-  }
-  old_pos = pos; /* Save current position as old */
-
-  /* Check and manually update if we reached end of buffer */
-  if (old_pos == ARRAY_LEN(usart_rx_dma_buffer)) {
-    old_pos = 0;
-  }
-}
 // callback de reception sur l'UART
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
   huart_cb = huart; // save UART pour transmission
-  HAL_UART_Receive_DMA(&huart2, data, 10);
-  if (state == WAITING)
-    head = (struct header *)data;
-  state = COMMUNICATING;
+  if (state == WAITING) {
+    head = (struct header *)header_str;
+    HAL_UART_Receive_DMA(&huart2, data, 128);
+    HAL_UART_Transmit_DMA(&huart2, data, 128);
+    state = COMMUNICATING;
+  }
+  if (state == COMMUNICATING) {
+    HAL_UART_Transmit_DMA(&huart2, data, 128);
+  }
 }
 
 // callback de fin de timer
@@ -222,7 +200,7 @@ int main(void) {
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  HAL_UART_Receive_DMA(&huart2, data, 1);
+  HAL_UART_Receive_DMA(&huart2, header_str, 6); // read header of fixed size
   while (1) {
     /* USER CODE END WHILE */
 
