@@ -22,6 +22,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "mbedtls/aes.h"
 #include "mbedtls/ctr_drbg.h"
 #include "mbedtls/entropy.h"
 #include "stm32f4xx_ll_dma.h"
@@ -51,17 +52,17 @@ DMA_HandleTypeDef hdma_usart2_rx;
 DMA_HandleTypeDef hdma_usart2_tx;
 
 /* USER CODE BEGIN PV */
-enum STATE { IDLE = 0, WAITING, COMMUNICATING, PROCESSING };
+enum STATE { IDLE = 0, WAITING, COMMUNICATING };
+enum Command { GEN = 0, ENC, DEC };
 struct __attribute__((__packed__)) header {
-  char cmd[3];
-  int payload_length;
+  uint8_t cmd;
+  size_t payload_length;
 };
 enum STATE state = IDLE;
-static int index = 0;
-static int recv = 0;
 static UART_HandleTypeDef *huart_cb;
-static uint8_t header_str[7] = {0};
+static uint8_t header_str[5] = {0};
 static uint8_t data[129] = {0};
+static uint8_t crypted_data[129] = {0};
 struct header *head;
 
 /* USER CODE END PV */
@@ -79,6 +80,7 @@ static void MX_USART2_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
 size_t _strlen(char *str) {
   size_t i = 0;
   while (str[i] != 0) {
@@ -86,6 +88,7 @@ size_t _strlen(char *str) {
   }
   return i;
 }
+
 void flash_write(uint32_t address, uint32_t data) {
   HAL_FLASH_Unlock();
   FLASH_Erase_Sector(FLASH_SECTOR_7, VOLTAGE_RANGE_1);
@@ -98,7 +101,7 @@ int generate_key() {
   mbedtls_entropy_context entropy;
   unsigned char key[32];
 
-  char *pers = "aes gen key";
+  char *pers = "aes generate key";
   int ret;
   mbedtls_entropy_init(&entropy);
 
@@ -107,27 +110,83 @@ int generate_key() {
   if ((ret = mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy,
                                    (unsigned char *)pers, _strlen(pers))) !=
       0) {
-    return 1;
+    return ret;
   }
 
   if ((ret = mbedtls_ctr_drbg_random(&ctr_drbg, key, 32)) != 0) {
-    return 2;
+    return ret;
   }
   // write key to flash
   // flash_write(0x08060000, key);
   return 0;
 }
+
+int encrypt() {
+  mbedtls_aes_context aes;
+  const unsigned char key[32] = {0};
+  if (mbedtls_aes_setkey_enc(&aes, key, 256)) {
+    return 0;
+  }
+  if (mbedtls_aes_crypt_ecb(&aes, MBEDTLS_AES_ENCRYPT, data, crypted_data))
+    return 0;
+
+  return 1;
+}
+
+int decrypt() {
+  mbedtls_aes_context aes;
+  const unsigned char key[32] = {0};
+  if (mbedtls_aes_setkey_dec(&aes, key, 256)) {
+    return 0;
+  }
+  if (mbedtls_aes_crypt_ecb(&aes, MBEDTLS_AES_DECRYPT, data, crypted_data))
+    return 0;
+
+  return 1;
+}
+
+void parse_header() {
+  char err[] = "ERROR";
+  if (head->cmd == GEN) {
+    if (generate_key()) {
+      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)err, 5);
+    }
+    state = IDLE;
+    HAL_TIM_Base_Start_IT(&htim10);
+  } else if (head->cmd == ENC) {
+    state = COMMUNICATING;
+    if (!encrypt()) {
+      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)err, 5);
+    } else {
+      HAL_UART_Transmit_DMA(&huart2, crypted_data, 128);
+    }
+  } else if (head->cmd == DEC) {
+    state = COMMUNICATING;
+    if (!decrypt()) {
+      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)err, 5);
+    } else {
+      HAL_UART_Transmit_DMA(&huart2, crypted_data, 128);
+    }
+  }
+}
+
 // callback de reception sur l'UART
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
   huart_cb = huart; // save UART pour transmission
+  HAL_TIM_Base_Stop_IT(&htim11);
   if (state == WAITING) {
     head = (struct header *)header_str;
     HAL_UART_Receive_DMA(&huart2, data, 128);
-    HAL_UART_Transmit_DMA(&huart2, header_str, 6);
-    state = COMMUNICATING;
-  }
-  if (state == COMMUNICATING) {
-    HAL_UART_Transmit_DMA(&huart2, data, 128);
+    parse_header();
+  } else if (state == COMMUNICATING) {
+    HAL_UART_Receive_DMA(&huart2, data, 128);
+    head->payload_length -= 128;
+    parse_header();
+    if (head->payload_length == 0) {
+      state = IDLE;
+    }
+  } else if (state == IDLE) {
+    HAL_UART_Receive_DMA(&huart2, header_str, 5);
   }
 }
 
@@ -200,7 +259,7 @@ int main(void) {
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  HAL_UART_Receive_DMA(&huart2, header_str, 6); // read header of fixed size
+  HAL_UART_Receive_DMA(&huart2, header_str, 5); // read header of fixed size
   while (1) {
     /* USER CODE END WHILE */
 
@@ -267,9 +326,9 @@ static void MX_TIM10_Init(void) {
 
   /* USER CODE END TIM10_Init 1 */
   htim10.Instance = TIM10;
-  htim10.Init.Prescaler = 2099;
+  htim10.Init.Prescaler = 4199;
   htim10.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim10.Init.Period = 4999;
+  htim10.Init.Period = 9999;
   htim10.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim10.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim10) != HAL_OK) {
