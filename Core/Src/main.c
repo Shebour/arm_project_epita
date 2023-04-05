@@ -22,16 +22,15 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "mbedtls/ctr_drbg.h"
+#include "mbedtls/entropy.h"
+#include "stm32f4xx_ll_dma.h"
 
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PDF */
-enum STATE { IDLE = 0, WAITING, COMMUNICATING, PROCESSING };
-struct __attribute__((__packed__)) header {
-  char cmd[3];
-  int payload_length;
-};
+
 /* USER CODE END PDF */
 
 /* Private define ------------------------------------------------------------*/
@@ -44,41 +43,113 @@ struct __attribute__((__packed__)) header {
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
-TIM_HandleTypeDef htim10; // timer led 2Hz (0.5sec)
-TIM_HandleTypeDef htim11; // timer bouton 15sec
+TIM_HandleTypeDef htim10;
+TIM_HandleTypeDef htim11;
 
 UART_HandleTypeDef huart2;
 DMA_HandleTypeDef hdma_usart2_rx;
 DMA_HandleTypeDef hdma_usart2_tx;
 
 /* USER CODE BEGIN PV */
+enum STATE { IDLE = 0, WAITING, COMMUNICATING, PROCESSING };
+struct __attribute__((__packed__)) header {
+  char cmd[3];
+  int payload_length;
+};
 enum STATE state = IDLE;
 static int index = 0;
 static int recv = 0;
 static UART_HandleTypeDef *huart_cb;
 static uint8_t data[128] = {0};
+struct header *head;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
-static void MX_USART2_UART_Init(void);
 static void MX_TIM10_Init(void);
 static void MX_TIM11_Init(void);
+static void MX_USART2_UART_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+size_t _strlen(char *str) {
+  size_t i = 0;
+  while (str[i] != 0) {
+    i++;
+  }
+  return i;
+}
+void flash_write(uint32_t address, uint32_t data) {
+  HAL_FLASH_Unlock();
+  FLASH_Erase_Sector(FLASH_SECTOR_7, VOLTAGE_RANGE_1);
+  HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, address, data);
+  HAL_FLASH_Lock();
+}
 
+int generate_key() {
+  mbedtls_ctr_drbg_context ctr_drbg;
+  mbedtls_entropy_context entropy;
+  unsigned char key[32];
+
+  char *pers = "aes gen key";
+  int ret;
+  mbedtls_entropy_init(&entropy);
+
+  mbedtls_ctr_drbg_init(&ctr_drbg);
+
+  if ((ret = mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy,
+                                   (unsigned char *)pers, _strlen(pers))) !=
+      0) {
+    return 1;
+  }
+
+  if ((ret = mbedtls_ctr_drbg_random(&ctr_drbg, key, 32)) != 0) {
+    return 2;
+  }
+  // write key to flash
+  // flash_write(0x08060000, key);
+  return 0;
+}
+void usart_rx_check(void) {
+  static size_t old_pos;
+  size_t pos;
+
+  /* Calculate current position in buffer */
+  pos = ARRAY_LEN(huart_cb->pRxBuffPtr) -
+        LL_DMA_GetDataLength(DMA1, LL_DMA_STREAM_1);
+  if (pos != old_pos) {  /* Check change in received data */
+    if (pos > old_pos) { /* Current position is over previous one */
+      /* We are in "linear" mode, case P1, P2, P3 */
+      /* Process data directly by subtracting "pointers" */
+      usart_process_data(&usart_rx_dma_buffer[old_pos], pos - old_pos);
+    } else {
+      /* We are in "overflow" mode, case P4 */
+      /* First process data to the end of buffer */
+      usart_process_data(&usart_rx_dma_buffer[old_pos],
+                         ARRAY_LEN(usart_rx_dma_buffer) - old_pos);
+      /* Continue with beginning of buffer */
+      usart_process_data(&usart_rx_dma_buffer[0], pos);
+    }
+  }
+  old_pos = pos; /* Save current position as old */
+
+  /* Check and manually update if we reached end of buffer */
+  if (old_pos == ARRAY_LEN(usart_rx_dma_buffer)) {
+    old_pos = 0;
+  }
+}
 // callback de reception sur l'UART
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
-  recv = 1;
-  index = !index;
   huart_cb = huart; // save UART pour transmission
-  HAL_UART_Receive_DMA(huart, &data[64 * index], 64);
+  HAL_UART_Receive_DMA(&huart2, data, 10);
+  if (state == WAITING)
+    head = (struct header *)data;
   state = COMMUNICATING;
 }
 
@@ -140,10 +211,10 @@ int main(void) {
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_DMA_Init();
-  MX_USART2_UART_Init();
   MX_TIM10_Init();
   MX_TIM11_Init();
   MX_MBEDTLS_Init();
+  MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
   HAL_TIM_Base_Start_IT(&htim10);
 
@@ -151,6 +222,7 @@ int main(void) {
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+  HAL_UART_Receive_DMA(&huart2, data, 1);
   while (1) {
     /* USER CODE END WHILE */
 
@@ -180,9 +252,9 @@ void SystemClock_Config(void) {
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
-  RCC_OscInitStruct.PLL.PLLM = 16;
-  RCC_OscInitStruct.PLL.PLLN = 336;
-  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV4;
+  RCC_OscInitStruct.PLL.PLLM = 8;
+  RCC_OscInitStruct.PLL.PLLN = 84;
+  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
   RCC_OscInitStruct.PLL.PLLQ = 7;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
     Error_Handler();
@@ -217,9 +289,9 @@ static void MX_TIM10_Init(void) {
 
   /* USER CODE END TIM10_Init 1 */
   htim10.Instance = TIM10;
-  htim10.Init.Prescaler = 4199;
+  htim10.Init.Prescaler = 2099;
   htim10.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim10.Init.Period = 9999;
+  htim10.Init.Period = 4999;
   htim10.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim10.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim10) != HAL_OK) {
@@ -350,7 +422,8 @@ static void MX_GPIO_Init(void) {
  */
 void Error_Handler(void) {
   /* USER CODE BEGIN Error_Handler_Debug */
-  /* User can add his own implementation to report the HAL error return state */
+  /* User can add his own implementation to report the HAL error return state
+   */
   __disable_irq();
   while (1) {
   }
@@ -368,8 +441,8 @@ void Error_Handler(void) {
 void assert_failed(uint8_t *file, uint32_t line) {
   /* USER CODE BEGIN 6 */
   /* User can add his own implementation to report the file name and line
-     number, ex: printf("Wrong parameters value: file %s on line %d\r\n", file,
-     line) */
+     number, ex: printf("Wrong parameters value: file %s on line %d\r\n",
+     file, line) */
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */
