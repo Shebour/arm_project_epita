@@ -110,14 +110,18 @@ int generate_key() {
   if ((ret = mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy,
                                    (unsigned char *)pers, _strlen(pers))) !=
       0) {
+    uint8_t ret2 = (uint8_t)ret;
+    HAL_UART_Transmit_DMA(&huart2, &ret2, 10);
     return ret;
   }
 
   if ((ret = mbedtls_ctr_drbg_random(&ctr_drbg, key, 32)) != 0) {
+    uint8_t ret2 = (uint8_t)ret;
+    HAL_UART_Transmit_DMA(&huart2, &ret2, 10);
     return ret;
   }
   // write key to flash
-  // flash_write(0x08060000, key);
+  // flash_write(0x08004000, key);
   return 0;
 }
 
@@ -152,36 +156,38 @@ void parse_header() {
       HAL_UART_Transmit_DMA(&huart2, (uint8_t *)err, 5);
     }
     state = IDLE;
+    HAL_UART_Receive_DMA(&huart2, header_str, 5);
     HAL_TIM_Base_Start_IT(&htim10);
-  } else if (head->cmd == ENC) {
+  } else if (head->cmd == ENC || head->cmd == DEC) {
     state = COMMUNICATING;
-    if (!encrypt()) {
-      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)err, 5);
-    } else {
-      HAL_UART_Transmit_DMA(&huart2, crypted_data, 128);
-    }
-  } else if (head->cmd == DEC) {
-    state = COMMUNICATING;
-    if (!decrypt()) {
-      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)err, 5);
-    } else {
-      HAL_UART_Transmit_DMA(&huart2, crypted_data, 128);
-    }
+    HAL_UART_Receive_DMA(&huart2, data, 128);
   }
 }
 
 // callback de reception sur l'UART
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+  char err[] = "ERROR";
   huart_cb = huart; // save UART pour transmission
   HAL_TIM_Base_Stop_IT(&htim11);
   if (state == WAITING) {
     head = (struct header *)header_str;
-    HAL_UART_Receive_DMA(&huart2, data, 128);
     parse_header();
   } else if (state == COMMUNICATING) {
     HAL_UART_Receive_DMA(&huart2, data, 128);
     head->payload_length -= 128;
-    parse_header();
+    if (head->cmd == ENC) {
+      if (!encrypt()) {
+        HAL_UART_Transmit_DMA(&huart2, (uint8_t *)err, 5);
+      } else {
+        HAL_UART_Transmit_DMA(&huart2, crypted_data, 128);
+      }
+    } else if (head->cmd == DEC) {
+      if (!decrypt()) {
+        HAL_UART_Transmit_DMA(&huart2, (uint8_t *)err, 5);
+      } else {
+        HAL_UART_Transmit_DMA(&huart2, crypted_data, 128);
+      }
+    }
     if (head->payload_length == 0) {
       state = IDLE;
     }
@@ -250,8 +256,8 @@ int main(void) {
   MX_DMA_Init();
   MX_TIM10_Init();
   MX_TIM11_Init();
-  MX_MBEDTLS_Init();
   MX_USART2_UART_Init();
+  MX_MBEDTLS_Init();
   /* USER CODE BEGIN 2 */
   HAL_TIM_Base_Start_IT(&htim10);
 
