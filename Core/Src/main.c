@@ -123,7 +123,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
   if (state == WAITING) {
     head = (struct header *)header_str;
     HAL_UART_Receive_DMA(&huart2, data, 128);
-    HAL_UART_Transmit_DMA(&huart2, data, 128);
+    HAL_UART_Transmit_DMA(&huart2, header_str, 6);
     state = COMMUNICATING;
   }
   if (state == COMMUNICATING) {
