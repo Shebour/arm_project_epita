@@ -36,6 +36,8 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define BUFFER_SIZE 512
+#define KEY_SIZE_BITS 256
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -53,19 +55,25 @@ DMA_HandleTypeDef hdma_usart2_tx;
 
 /* USER CODE BEGIN PV */
 enum STATE { IDLE = 0, WAITING, COMMUNICATING };
+
 enum Command { GEN = 0, ENC, DEC };
+
 struct __attribute__((__packed__)) header {
   uint8_t cmd;
   size_t payload_length;
 };
+
 enum STATE state = IDLE;
 UART_HandleTypeDef *huart_cb;
 uint8_t header_str[5] = {0};
-uint8_t data[128] = {0};
-uint8_t crypted_data[128] = {0};
-struct header *head;
+uint8_t data[BUFFER_SIZE] = {0};
+uint8_t crypted_data[BUFFER_SIZE] = {0};
+struct header *head = {0};
 __attribute__((section(".reserved"))) unsigned char key[32];
-unsigned char key_tmp[32];
+int key_present = 0;
+unsigned char key_tmp[32] = {0};
+unsigned char iv[16] = {0};
+char iv_data[16 + BUFFER_SIZE] = {0};
 
 /* USER CODE END PV */
 
@@ -83,12 +91,16 @@ static void MX_USART2_UART_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-size_t _strlen(char *str) {
-  size_t i = 0;
-  while (str[i] != 0) {
-    i++;
+char *_strncpy(char *dest, const char *src, size_t n) {
+  if (n == 0)
+    return dest;
+  char *d = dest;
+  const char *s = src;
+  while (n > 0) {
+    *d++ = *s++;
+    n--;
   }
-  return i;
+  return dest;
 }
 
 int generate_key() {
@@ -99,92 +111,110 @@ int generate_key() {
 
   mbedtls_ctr_drbg_init(&ctr_drbg);
 
-  char pers[] = "azertyuiopqwertyasdfghjkbfsdhdfg";
-
-  mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy,
-                        (unsigned char *)pers, _strlen(pers));
+  mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy, NULL, 0);
 
   if (mbedtls_ctr_drbg_random_with_add(&ctr_drbg, key_tmp, 32,
                                        (const unsigned char *)HAL_GetTick(),
                                        1) != 0) {
     return 0;
   }
+  if (mbedtls_ctr_drbg_random_with_add(
+          &ctr_drbg, iv, 16, (const unsigned char *)HAL_GetTick(), 1) != 0)
+    return 0;
   return 1;
 }
 
 int encrypt() {
+  if (!key_present)
+    return 0;
   mbedtls_aes_context aes;
-  if (mbedtls_aes_setkey_enc(&aes, key_tmp, 256)) {
+  if (mbedtls_aes_setkey_enc(&aes, key_tmp, KEY_SIZE_BITS)) {
     return 0;
   }
-  if (mbedtls_aes_crypt_ecb(&aes, MBEDTLS_AES_ENCRYPT, data, crypted_data))
+  _strncpy(iv_data, (char *)iv, 16);
+  // HAL_UART_Transmit_DMA(&huart2, (uint8_t *)iv, 16);
+  if (mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_ENCRYPT, BUFFER_SIZE, iv, data,
+                            crypted_data))
     return 0;
-
+  // mbedtls_aes_encrypt(&aes, buffer, crypted_tmp);
+  _strncpy(&iv_data[16], (char *)crypted_data, BUFFER_SIZE);
   return 1;
 }
 
 int decrypt() {
+  if (!key_present)
+    return 0;
   mbedtls_aes_context aes;
-  if (mbedtls_aes_setkey_dec(&aes, key_tmp, 256)) {
+  if (mbedtls_aes_setkey_dec(&aes, key_tmp, KEY_SIZE_BITS)) {
     return 0;
   }
-  for (int i = 0; i < 128; i += 16) {
-    if (mbedtls_aes_crypt_ecb(&aes, MBEDTLS_AES_DECRYPT, &data[i],
-                              &crypted_data[i]))
-      return 0;
-  }
+  _strncpy((char *)iv, iv_data, 16);
+  _strncpy((char *)data, &iv_data[16], BUFFER_SIZE);
+  if (mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_DECRYPT, BUFFER_SIZE, iv, data,
+                            crypted_data))
+    return 0;
   return 1;
 }
 
 void parse_header() {
   if (head->cmd == GEN) {
     if (!generate_key()) {
+      key_present = 0;
       HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"KO", 2);
     } else {
+      key_present = 1;
       HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"OK", 2);
     }
     state = IDLE;
     HAL_UART_Receive_DMA(&huart2, header_str, 5);
     HAL_TIM_Base_Start_IT(&htim10);
 
-  } else if (head->cmd == ENC || head->cmd == DEC) {
+  } else if (head->cmd == ENC) {
     state = COMMUNICATING;
-    HAL_UART_Receive_DMA(&huart2, data, 128);
+    HAL_UART_Receive_DMA(&huart2, data, BUFFER_SIZE);
+  } else if (head->cmd == DEC) {
+    state = COMMUNICATING;
+    HAL_UART_Receive_DMA(&huart2, (uint8_t *)iv_data, BUFFER_SIZE + 16);
   }
 }
 
 void communicate() {
   if (head->cmd == ENC) {
     if (!encrypt()) {
-      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"KO", 5);
+      HAL_UART_Transmit_DMA(&huart2, data, BUFFER_SIZE);
     } else {
-      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"OK", 5);
-      HAL_UART_Transmit_DMA(&huart2, crypted_data, 128);
+      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)iv_data, BUFFER_SIZE + 16);
     }
   } else if (head->cmd == DEC) {
     if (!decrypt()) {
-      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"KO", 5);
+      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)iv_data, BUFFER_SIZE);
     } else {
-      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"OK", 5);
-      HAL_UART_Transmit_DMA(&huart2, crypted_data, 128);
+      HAL_UART_Transmit_DMA(&huart2, crypted_data, BUFFER_SIZE);
     }
   }
 }
 
 // callback de reception sur l'UART
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
-  huart_cb = huart; // save UART pour transmission
+  if (state == IDLE) {
+    HAL_UART_Receive_DMA(&huart2, header_str, 5);
+    return;
+  }
+
   HAL_TIM_Base_Stop_IT(&htim11);
+  huart_cb = huart; // save UART pour transmission
   if (state == WAITING) {
     head = (struct header *)header_str;
     parse_header();
   } else if (state == COMMUNICATING) {
-    // HAL_UART_Receive_DMA(&huart2, data, 128);
+    head->payload_length -= 1;
+    communicate();
     if (head->payload_length == 0) {
       state = IDLE;
-    }
-  } else if (state == IDLE) {
-    HAL_UART_Receive_DMA(&huart2, header_str, 5);
+      HAL_UART_Receive_DMA(&huart2, header_str, 5);
+      HAL_TIM_Base_Start_IT(&htim10);
+    } else
+      HAL_UART_Receive_DMA(&huart2, data, BUFFER_SIZE);
   }
 }
 
@@ -257,7 +287,8 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  HAL_UART_Receive_DMA(&huart2, header_str, 5); // read header of fixed size
+  HAL_UART_Receive_DMA(&huart2, header_str,
+                       5); // read header of fixed size
   while (1) {
     /* USER CODE END WHILE */
 
