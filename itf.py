@@ -1,14 +1,11 @@
 from typing import Any
 import serial
-from Crypto.Cipher import AES
 
 
 def init_board(tty: str):
-    try:
-        board = serial.Serial(tty, baudrate=115200, bytesize=8, timeout=10)
-    except:
-        print(f"Error initialization board: {tty}")
-        exit(1)
+    board = serial.Serial(tty, baudrate=115200, bytesize=8, timeout=5)
+    if not board.is_open:
+        raise Exception(f"{tty} is not open ! Exiting...")
     return board
 
 
@@ -17,26 +14,23 @@ def generate_key(board: Any):
     length = (0).to_bytes(4, "little")
     board.write(header)
     board.write(length)
+    ret = board.read(2).decode("utf-8")
+    if ret != "OK":
+        print("KOOO")
+        return False
     return True
 
 
 def aes_encrypt(board: Any, infile: str, outfile: str):
     lines = []
+    l = ""
     with open(infile, "r") as f:
         lines = f.readlines()
-        " ".join(lines)
-    length = len(lines).to_bytes(4, "little")
+        l = "".join(lines)
+    print(l)
+    n = 128
+    split = [l[i : i + n] for i in range(0, len(l), n)]
     header = (1).to_bytes(1, "little")
-    board.write(header)
-    board.write(length)
-    size = 0
-    s = ""
-    while size < len(lines):
-        s += board.read(128)
-        size += 128
-    with open(outfile, "w") as f:
-        f.write(s)
-
-
-b = init_board("/dev/ttyACM0")
-generate_key(b)
+    length = len(split).to_bytes(4, "little")
+    # board.write(header)
+    # board.write(length)

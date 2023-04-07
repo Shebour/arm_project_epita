@@ -30,9 +30,9 @@
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
-/* USER CODE BEGIN PDF */
+/* USER CODE BEGIN PTD */
 
-/* USER CODE END PDF */
+/* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
@@ -59,11 +59,13 @@ struct __attribute__((__packed__)) header {
   size_t payload_length;
 };
 enum STATE state = IDLE;
-static UART_HandleTypeDef *huart_cb;
-static uint8_t header_str[5] = {0};
-static uint8_t data[129] = {0};
-static uint8_t crypted_data[129] = {0};
+UART_HandleTypeDef *huart_cb;
+uint8_t header_str[5] = {0};
+uint8_t data[128] = {0};
+uint8_t crypted_data[128] = {0};
 struct header *head;
+__attribute__((section(".reserved"))) unsigned char key[32];
+unsigned char key_tmp[32];
 
 /* USER CODE END PV */
 
@@ -89,46 +91,30 @@ size_t _strlen(char *str) {
   return i;
 }
 
-void flash_write(uint32_t address, uint32_t data) {
-  HAL_FLASH_Unlock();
-  FLASH_Erase_Sector(FLASH_SECTOR_7, VOLTAGE_RANGE_1);
-  HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, address, data);
-  HAL_FLASH_Lock();
-}
-
 int generate_key() {
   mbedtls_ctr_drbg_context ctr_drbg;
   mbedtls_entropy_context entropy;
-  unsigned char key[32];
 
-  char *pers = "aes generate key";
-  int ret;
   mbedtls_entropy_init(&entropy);
 
   mbedtls_ctr_drbg_init(&ctr_drbg);
 
-  if ((ret = mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy,
-                                   (unsigned char *)pers, _strlen(pers))) !=
-      0) {
-    uint8_t ret2 = (uint8_t)ret;
-    HAL_UART_Transmit_DMA(&huart2, &ret2, 10);
-    return ret;
-  }
+  char pers[] = "azertyuiopqwertyasdfghjkbfsdhdfg";
 
-  if ((ret = mbedtls_ctr_drbg_random(&ctr_drbg, key, 32)) != 0) {
-    uint8_t ret2 = (uint8_t)ret;
-    HAL_UART_Transmit_DMA(&huart2, &ret2, 10);
-    return ret;
+  mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy,
+                        (unsigned char *)pers, _strlen(pers));
+
+  if (mbedtls_ctr_drbg_random_with_add(&ctr_drbg, key_tmp, 32,
+                                       (const unsigned char *)HAL_GetTick(),
+                                       1) != 0) {
+    return 0;
   }
-  // write key to flash
-  // flash_write(0x08004000, key);
-  return 0;
+  return 1;
 }
 
 int encrypt() {
   mbedtls_aes_context aes;
-  const unsigned char key[32] = {0};
-  if (mbedtls_aes_setkey_enc(&aes, key, 256)) {
+  if (mbedtls_aes_setkey_enc(&aes, key_tmp, 256)) {
     return 0;
   }
   if (mbedtls_aes_crypt_ecb(&aes, MBEDTLS_AES_ENCRYPT, data, crypted_data))
@@ -139,55 +125,61 @@ int encrypt() {
 
 int decrypt() {
   mbedtls_aes_context aes;
-  const unsigned char key[32] = {0};
-  if (mbedtls_aes_setkey_dec(&aes, key, 256)) {
+  if (mbedtls_aes_setkey_dec(&aes, key_tmp, 256)) {
     return 0;
   }
-  if (mbedtls_aes_crypt_ecb(&aes, MBEDTLS_AES_DECRYPT, data, crypted_data))
-    return 0;
-
+  for (int i = 0; i < 128; i += 16) {
+    if (mbedtls_aes_crypt_ecb(&aes, MBEDTLS_AES_DECRYPT, &data[i],
+                              &crypted_data[i]))
+      return 0;
+  }
   return 1;
 }
 
 void parse_header() {
-  char err[] = "ERROR";
   if (head->cmd == GEN) {
-    if (generate_key()) {
-      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)err, 5);
+    if (!generate_key()) {
+      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"KO", 2);
+    } else {
+      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"OK", 2);
     }
     state = IDLE;
     HAL_UART_Receive_DMA(&huart2, header_str, 5);
     HAL_TIM_Base_Start_IT(&htim10);
+
   } else if (head->cmd == ENC || head->cmd == DEC) {
     state = COMMUNICATING;
     HAL_UART_Receive_DMA(&huart2, data, 128);
   }
 }
 
+void communicate() {
+  if (head->cmd == ENC) {
+    if (!encrypt()) {
+      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"KO", 5);
+    } else {
+      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"OK", 5);
+      HAL_UART_Transmit_DMA(&huart2, crypted_data, 128);
+    }
+  } else if (head->cmd == DEC) {
+    if (!decrypt()) {
+      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"KO", 5);
+    } else {
+      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"OK", 5);
+      HAL_UART_Transmit_DMA(&huart2, crypted_data, 128);
+    }
+  }
+}
+
 // callback de reception sur l'UART
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
-  char err[] = "ERROR";
   huart_cb = huart; // save UART pour transmission
   HAL_TIM_Base_Stop_IT(&htim11);
   if (state == WAITING) {
     head = (struct header *)header_str;
     parse_header();
   } else if (state == COMMUNICATING) {
-    HAL_UART_Receive_DMA(&huart2, data, 128);
-    head->payload_length -= 128;
-    if (head->cmd == ENC) {
-      if (!encrypt()) {
-        HAL_UART_Transmit_DMA(&huart2, (uint8_t *)err, 5);
-      } else {
-        HAL_UART_Transmit_DMA(&huart2, crypted_data, 128);
-      }
-    } else if (head->cmd == DEC) {
-      if (!decrypt()) {
-        HAL_UART_Transmit_DMA(&huart2, (uint8_t *)err, 5);
-      } else {
-        HAL_UART_Transmit_DMA(&huart2, crypted_data, 128);
-      }
-    }
+    // HAL_UART_Receive_DMA(&huart2, data, 128);
     if (head->payload_length == 0) {
       state = IDLE;
     }
@@ -226,18 +218,18 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
 /* USER CODE END 0 */
 
 /**
- * @brief  The application entry point.
- * @retval int
- */
-int main(void) {
+  * @brief  The application entry point.
+  * @retval int
+  */
+int main(void)
+{
   /* USER CODE BEGIN 1 */
 
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
 
-  /* Reset of all peripherals, Initializes the Flash interface and the Systick.
-   */
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
   HAL_Init();
 
   /* USER CODE BEGIN Init */
@@ -275,21 +267,22 @@ int main(void) {
 }
 
 /**
- * @brief System Clock Configuration
- * @retval None
- */
-void SystemClock_Config(void) {
+  * @brief System Clock Configuration
+  * @retval None
+  */
+void SystemClock_Config(void)
+{
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
   /** Configure the main internal regulator output voltage
-   */
+  */
   __HAL_RCC_PWR_CLK_ENABLE();
   __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE2);
 
   /** Initializes the RCC Oscillators according to the specified parameters
-   * in the RCC_OscInitTypeDef structure.
-   */
+  * in the RCC_OscInitTypeDef structure.
+  */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
@@ -299,30 +292,33 @@ void SystemClock_Config(void) {
   RCC_OscInitStruct.PLL.PLLN = 84;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
   RCC_OscInitStruct.PLL.PLLQ = 7;
-  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
     Error_Handler();
   }
 
   /** Initializes the CPU, AHB and APB buses clocks
-   */
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK |
-                                RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK) {
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
+  {
     Error_Handler();
   }
 }
 
 /**
- * @brief TIM10 Initialization Function
- * @param None
- * @retval None
- */
-static void MX_TIM10_Init(void) {
+  * @brief TIM10 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM10_Init(void)
+{
 
   /* USER CODE BEGIN TIM10_Init 0 */
 
@@ -332,25 +328,28 @@ static void MX_TIM10_Init(void) {
 
   /* USER CODE END TIM10_Init 1 */
   htim10.Instance = TIM10;
-  htim10.Init.Prescaler = 4199;
+  htim10.Init.Prescaler = 2999;
   htim10.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim10.Init.Period = 9999;
+  htim10.Init.Period = 6999;
   htim10.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim10.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  if (HAL_TIM_Base_Init(&htim10) != HAL_OK) {
+  if (HAL_TIM_Base_Init(&htim10) != HAL_OK)
+  {
     Error_Handler();
   }
   /* USER CODE BEGIN TIM10_Init 2 */
 
   /* USER CODE END TIM10_Init 2 */
+
 }
 
 /**
- * @brief TIM11 Initialization Function
- * @param None
- * @retval None
- */
-static void MX_TIM11_Init(void) {
+  * @brief TIM11 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM11_Init(void)
+{
 
   /* USER CODE BEGIN TIM11_Init 0 */
 
@@ -360,25 +359,28 @@ static void MX_TIM11_Init(void) {
 
   /* USER CODE END TIM11_Init 1 */
   htim11.Instance = TIM11;
-  htim11.Init.Prescaler = 19225;
+  htim11.Init.Prescaler = 25199;
   htim11.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim11.Init.Period = 65535;
+  htim11.Init.Period = 49999;
   htim11.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim11.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  if (HAL_TIM_Base_Init(&htim11) != HAL_OK) {
+  if (HAL_TIM_Base_Init(&htim11) != HAL_OK)
+  {
     Error_Handler();
   }
   /* USER CODE BEGIN TIM11_Init 2 */
 
   /* USER CODE END TIM11_Init 2 */
+
 }
 
 /**
- * @brief USART2 Initialization Function
- * @param None
- * @retval None
- */
-static void MX_USART2_UART_Init(void) {
+  * @brief USART2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART2_UART_Init(void)
+{
 
   /* USER CODE BEGIN USART2_Init 0 */
 
@@ -395,18 +397,21 @@ static void MX_USART2_UART_Init(void) {
   huart2.Init.Mode = UART_MODE_TX_RX;
   huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
   huart2.Init.OverSampling = UART_OVERSAMPLING_16;
-  if (HAL_UART_Init(&huart2) != HAL_OK) {
+  if (HAL_UART_Init(&huart2) != HAL_OK)
+  {
     Error_Handler();
   }
   /* USER CODE BEGIN USART2_Init 2 */
 
   /* USER CODE END USART2_Init 2 */
+
 }
 
 /**
- * Enable DMA controller clock
- */
-static void MX_DMA_Init(void) {
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
 
   /* DMA controller clock enable */
   __HAL_RCC_DMA1_CLK_ENABLE();
@@ -418,14 +423,16 @@ static void MX_DMA_Init(void) {
   /* DMA1_Stream6_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Stream6_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Stream6_IRQn);
+
 }
 
 /**
- * @brief GPIO Initialization Function
- * @param None
- * @retval None
- */
-static void MX_GPIO_Init(void) {
+  * @brief GPIO Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_GPIO_Init(void)
+{
   GPIO_InitTypeDef GPIO_InitStruct = {0};
 
   /* GPIO Ports Clock Enable */
@@ -453,6 +460,7 @@ static void MX_GPIO_Init(void) {
   /* EXTI interrupt init*/
   HAL_NVIC_SetPriority(EXTI0_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(EXTI0_IRQn);
+
 }
 
 /* USER CODE BEGIN 4 */
@@ -460,10 +468,11 @@ static void MX_GPIO_Init(void) {
 /* USER CODE END 4 */
 
 /**
- * @brief  This function is executed in case of error occurrence.
- * @retval None
- */
-void Error_Handler(void) {
+  * @brief  This function is executed in case of error occurrence.
+  * @retval None
+  */
+void Error_Handler(void)
+{
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state
    */
@@ -473,15 +482,16 @@ void Error_Handler(void) {
   /* USER CODE END Error_Handler_Debug */
 }
 
-#ifdef USE_FULL_ASSERT
+#ifdef  USE_FULL_ASSERT
 /**
- * @brief  Reports the name of the source file and the source line number
- *         where the assert_param error has occurred.
- * @param  file: pointer to the source file name
- * @param  line: assert_param error line source number
- * @retval None
- */
-void assert_failed(uint8_t *file, uint32_t line) {
+  * @brief  Reports the name of the source file and the source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
+  * @retval None
+  */
+void assert_failed(uint8_t *file, uint32_t line)
+{
   /* USER CODE BEGIN 6 */
   /* User can add his own implementation to report the file name and line
      number, ex: printf("Wrong parameters value: file %s on line %d\r\n",
