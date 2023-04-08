@@ -1,6 +1,4 @@
 build
-test
-test.py
 .cache
 compile_commands.json
 .gdb_history

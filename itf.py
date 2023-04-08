@@ -1,5 +1,6 @@
 from typing import Any
 import serial
+import time
 
 
 class Board:
@@ -57,11 +58,13 @@ def aes_encrypt(board: Any, infile: str, outfile: str) -> bool:
     board.send_header(1, len(content_list))
     for data in content_list:
         board._write(data.encode())
+        time.sleep(1)
         encoded_data.append(board._read(512 + 16).hex())
 
+    print(len(encoded_data))
+    print(encoded_data)
     with open(outfile, "w+") as f:
         for enc in encoded_data:
-            print(enc)
             f.write(enc)
 
     for data, enc_data in zip(content_list, encoded_data):
@@ -77,17 +80,20 @@ def aes_decrypt(board: Any, infile: str, outfile: str):
     if content == None:
         raise Exception(f"Fail reading {infile}")
     n = 528
+    print(len(content))
     content_list = [content[i : i + n] for i in range(0, len(content), n)]
     decoded_data = []
+    print(len(content_list))
     board.send_header(2, len(content_list))
     for data in content_list:
         print(data)
         board._write(bytes.fromhex(data))
+        time.sleep(1)
         decoded_data.append(board._read(512))
     with open(outfile, "w+") as f:
         for dec in decoded_data:
             print(dec)
-            f.write(dec.decode())
+            f.write(dec.decode()[: -board.padding_len])
 
     for data, dec_data in zip(content_list, decoded_data):
         if data == dec_data.hex():

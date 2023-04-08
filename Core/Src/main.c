@@ -30,9 +30,9 @@
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
-/* USER CODE BEGIN PTD */
+/* USER CODE BEGIN PDF */
 
-/* USER CODE END PTD */
+/* USER CODE END PDF */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
@@ -69,11 +69,11 @@ uint8_t header_str[5] = {0};
 uint8_t data[BUFFER_SIZE] = {0};
 uint8_t crypted_data[BUFFER_SIZE] = {0};
 struct header *head = {0};
-__attribute__((section(".reserved"))) unsigned char key[32];
+__attribute__((section(".reserved"))) uint8_t key[32];
 int key_present = 0;
-unsigned char key_tmp[32] = {0};
-unsigned char iv[16] = {0};
-char iv_data[16 + BUFFER_SIZE] = {0};
+uint8_t key_tmp[32] = {0};
+uint8_t iv[16] = {0};
+uint8_t iv_data[16 + BUFFER_SIZE] = {0};
 
 /* USER CODE END PV */
 
@@ -90,7 +90,12 @@ static void MX_USART2_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
+void *_memset(void *dest, int val, size_t len) {
+  unsigned char *ptr = (unsigned char *)dest;
+  while (len-- > 0)
+    *ptr++ = val;
+  return dest;
+}
 char *_strncpy(char *dest, const char *src, size_t n) {
   if (n == 0)
     return dest;
@@ -131,13 +136,14 @@ int encrypt() {
   if (mbedtls_aes_setkey_enc(&aes, key_tmp, KEY_SIZE_BITS)) {
     return 0;
   }
-  _strncpy(iv_data, (char *)iv, 16);
-  // HAL_UART_Transmit_DMA(&huart2, (uint8_t *)iv, 16);
+
+  _memset(crypted_data, 0, BUFFER_SIZE);
+  _memset(iv_data, 0, 16 + BUFFER_SIZE);
+  _strncpy((char *)iv_data, (char *)iv, 16);
   if (mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_ENCRYPT, BUFFER_SIZE, iv, data,
                             crypted_data))
     return 0;
-  // mbedtls_aes_encrypt(&aes, buffer, crypted_tmp);
-  _strncpy(&iv_data[16], (char *)crypted_data, BUFFER_SIZE);
+  _strncpy((char *)&iv_data[16], (char *)crypted_data, BUFFER_SIZE);
   return 1;
 }
 
@@ -148,8 +154,11 @@ int decrypt() {
   if (mbedtls_aes_setkey_dec(&aes, key_tmp, KEY_SIZE_BITS)) {
     return 0;
   }
-  _strncpy((char *)iv, iv_data, 16);
-  _strncpy((char *)data, &iv_data[16], BUFFER_SIZE);
+  _memset(iv, 0, 16);
+  _memset(data, 0, BUFFER_SIZE);
+  _memset(crypted_data, 0, BUFFER_SIZE);
+  _strncpy((char *)iv, (char *)iv_data, 16);
+  _strncpy((char *)data, (char *)&iv_data[16], BUFFER_SIZE);
   if (mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_DECRYPT, BUFFER_SIZE, iv, data,
                             crypted_data))
     return 0;
@@ -160,10 +169,10 @@ void parse_header() {
   if (head->cmd == GEN) {
     if (!generate_key()) {
       key_present = 0;
-      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"KO", 2);
+      HAL_UART_Transmit(&huart2, (uint8_t *)"KO", 2, 1000);
     } else {
       key_present = 1;
-      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"OK", 2);
+      HAL_UART_Transmit(&huart2, (uint8_t *)"OK", 2, 1000);
     }
     state = IDLE;
     HAL_UART_Receive_DMA(&huart2, header_str, 5);
@@ -181,15 +190,19 @@ void parse_header() {
 void communicate() {
   if (head->cmd == ENC) {
     if (!encrypt()) {
-      HAL_UART_Transmit_DMA(&huart2, data, BUFFER_SIZE);
+      uint8_t error[528] = {0};
+      _strncpy((char *)error, "ENCRYPTION ERROR", 16);
+      HAL_UART_Transmit(&huart2, error, BUFFER_SIZE + 16, 1000);
     } else {
-      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)iv_data, BUFFER_SIZE + 16);
+      HAL_UART_Transmit(&huart2, (uint8_t *)iv_data, BUFFER_SIZE + 16, 1000);
     }
   } else if (head->cmd == DEC) {
     if (!decrypt()) {
-      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)iv_data, BUFFER_SIZE);
+      uint8_t error[512] = {0};
+      _strncpy((char *)error, "DECRYPTION ERROR", 16);
+      HAL_UART_Transmit(&huart2, error, BUFFER_SIZE, 1000);
     } else {
-      HAL_UART_Transmit_DMA(&huart2, crypted_data, BUFFER_SIZE);
+      HAL_UART_Transmit(&huart2, crypted_data, BUFFER_SIZE, 1000);
     }
   }
 }
@@ -208,13 +221,17 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     parse_header();
   } else if (state == COMMUNICATING) {
     head->payload_length -= 1;
+    parse_header();
     communicate();
     if (head->payload_length == 0) {
       state = IDLE;
       HAL_UART_Receive_DMA(&huart2, header_str, 5);
       HAL_TIM_Base_Start_IT(&htim10);
-    } else
+    } else if (head->cmd == ENC) {
       HAL_UART_Receive_DMA(&huart2, data, BUFFER_SIZE);
+    } else if (head->cmd == DEC) {
+      HAL_UART_Receive_DMA(&huart2, data, BUFFER_SIZE + 16);
+    }
   }
 }
 
@@ -248,18 +265,18 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
 /* USER CODE END 0 */
 
 /**
-  * @brief  The application entry point.
-  * @retval int
-  */
-int main(void)
-{
+ * @brief  The application entry point.
+ * @retval int
+ */
+int main(void) {
   /* USER CODE BEGIN 1 */
 
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
 
-  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick.
+   */
   HAL_Init();
 
   /* USER CODE BEGIN Init */
@@ -298,22 +315,21 @@ int main(void)
 }
 
 /**
-  * @brief System Clock Configuration
-  * @retval None
-  */
-void SystemClock_Config(void)
-{
+ * @brief System Clock Configuration
+ * @retval None
+ */
+void SystemClock_Config(void) {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
   /** Configure the main internal regulator output voltage
-  */
+   */
   __HAL_RCC_PWR_CLK_ENABLE();
   __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE2);
 
   /** Initializes the RCC Oscillators according to the specified parameters
-  * in the RCC_OscInitTypeDef structure.
-  */
+   * in the RCC_OscInitTypeDef structure.
+   */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
@@ -323,33 +339,30 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.PLL.PLLN = 84;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
   RCC_OscInitStruct.PLL.PLLQ = 7;
-  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
-  {
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
     Error_Handler();
   }
 
   /** Initializes the CPU, AHB and APB buses clocks
-  */
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
-                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+   */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK |
+                                RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
-  {
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK) {
     Error_Handler();
   }
 }
 
 /**
-  * @brief TIM10 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_TIM10_Init(void)
-{
+ * @brief TIM10 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_TIM10_Init(void) {
 
   /* USER CODE BEGIN TIM10_Init 0 */
 
@@ -364,23 +377,20 @@ static void MX_TIM10_Init(void)
   htim10.Init.Period = 6999;
   htim10.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim10.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  if (HAL_TIM_Base_Init(&htim10) != HAL_OK)
-  {
+  if (HAL_TIM_Base_Init(&htim10) != HAL_OK) {
     Error_Handler();
   }
   /* USER CODE BEGIN TIM10_Init 2 */
 
   /* USER CODE END TIM10_Init 2 */
-
 }
 
 /**
-  * @brief TIM11 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_TIM11_Init(void)
-{
+ * @brief TIM11 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_TIM11_Init(void) {
 
   /* USER CODE BEGIN TIM11_Init 0 */
 
@@ -395,23 +405,20 @@ static void MX_TIM11_Init(void)
   htim11.Init.Period = 49999;
   htim11.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim11.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  if (HAL_TIM_Base_Init(&htim11) != HAL_OK)
-  {
+  if (HAL_TIM_Base_Init(&htim11) != HAL_OK) {
     Error_Handler();
   }
   /* USER CODE BEGIN TIM11_Init 2 */
 
   /* USER CODE END TIM11_Init 2 */
-
 }
 
 /**
-  * @brief USART2 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_USART2_UART_Init(void)
-{
+ * @brief USART2 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_USART2_UART_Init(void) {
 
   /* USER CODE BEGIN USART2_Init 0 */
 
@@ -428,21 +435,18 @@ static void MX_USART2_UART_Init(void)
   huart2.Init.Mode = UART_MODE_TX_RX;
   huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
   huart2.Init.OverSampling = UART_OVERSAMPLING_16;
-  if (HAL_UART_Init(&huart2) != HAL_OK)
-  {
+  if (HAL_UART_Init(&huart2) != HAL_OK) {
     Error_Handler();
   }
   /* USER CODE BEGIN USART2_Init 2 */
 
   /* USER CODE END USART2_Init 2 */
-
 }
 
 /**
-  * Enable DMA controller clock
-  */
-static void MX_DMA_Init(void)
-{
+ * Enable DMA controller clock
+ */
+static void MX_DMA_Init(void) {
 
   /* DMA controller clock enable */
   __HAL_RCC_DMA1_CLK_ENABLE();
@@ -454,16 +458,14 @@ static void MX_DMA_Init(void)
   /* DMA1_Stream6_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Stream6_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Stream6_IRQn);
-
 }
 
 /**
-  * @brief GPIO Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_GPIO_Init(void)
-{
+ * @brief GPIO Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_GPIO_Init(void) {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
 
   /* GPIO Ports Clock Enable */
@@ -491,7 +493,6 @@ static void MX_GPIO_Init(void)
   /* EXTI interrupt init*/
   HAL_NVIC_SetPriority(EXTI0_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(EXTI0_IRQn);
-
 }
 
 /* USER CODE BEGIN 4 */
@@ -499,11 +500,10 @@ static void MX_GPIO_Init(void)
 /* USER CODE END 4 */
 
 /**
-  * @brief  This function is executed in case of error occurrence.
-  * @retval None
-  */
-void Error_Handler(void)
-{
+ * @brief  This function is executed in case of error occurrence.
+ * @retval None
+ */
+void Error_Handler(void) {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state
    */
@@ -513,16 +513,15 @@ void Error_Handler(void)
   /* USER CODE END Error_Handler_Debug */
 }
 
-#ifdef  USE_FULL_ASSERT
+#ifdef USE_FULL_ASSERT
 /**
-  * @brief  Reports the name of the source file and the source line number
-  *         where the assert_param error has occurred.
-  * @param  file: pointer to the source file name
-  * @param  line: assert_param error line source number
-  * @retval None
-  */
-void assert_failed(uint8_t *file, uint32_t line)
-{
+ * @brief  Reports the name of the source file and the source line number
+ *         where the assert_param error has occurred.
+ * @param  file: pointer to the source file name
+ * @param  line: assert_param error line source number
+ * @retval None
+ */
+void assert_failed(uint8_t *file, uint32_t line) {
   /* USER CODE BEGIN 6 */
   /* User can add his own implementation to report the file name and line
      number, ex: printf("Wrong parameters value: file %s on line %d\r\n",
