@@ -169,10 +169,10 @@ void parse_header() {
   if (head->cmd == GEN) {
     if (!generate_key()) {
       key_present = 0;
-      HAL_UART_Transmit(&huart2, (uint8_t *)"KO", 2, 1000);
+      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"KO", 2);
     } else {
       key_present = 1;
-      HAL_UART_Transmit(&huart2, (uint8_t *)"OK", 2, 1000);
+      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"OK", 2);
     }
     state = IDLE;
     HAL_UART_Receive_DMA(&huart2, header_str, 5);
@@ -183,7 +183,7 @@ void parse_header() {
     HAL_UART_Receive_DMA(&huart2, data, BUFFER_SIZE);
   } else if (head->cmd == DEC) {
     state = COMMUNICATING;
-    HAL_UART_Receive_DMA(&huart2, (uint8_t *)iv_data, BUFFER_SIZE + 16);
+    HAL_UART_Receive_DMA(&huart2, iv_data, BUFFER_SIZE + 16);
   }
 }
 
@@ -192,18 +192,20 @@ void communicate() {
     if (!encrypt()) {
       uint8_t error[528] = {0};
       _strncpy((char *)error, "ENCRYPTION ERROR", 16);
-      HAL_UART_Transmit(&huart2, error, BUFFER_SIZE + 16, 1000);
+      HAL_UART_Transmit_DMA(&huart2, error, BUFFER_SIZE + 16);
     } else {
-      HAL_UART_Transmit(&huart2, (uint8_t *)iv_data, BUFFER_SIZE + 16, 1000);
+      HAL_UART_Transmit_DMA(&huart2, iv_data, BUFFER_SIZE + 16);
     }
+    // HAL_UART_Receive_DMA(&huart2, data, BUFFER_SIZE);
   } else if (head->cmd == DEC) {
     if (!decrypt()) {
       uint8_t error[512] = {0};
       _strncpy((char *)error, "DECRYPTION ERROR", 16);
-      HAL_UART_Transmit(&huart2, error, BUFFER_SIZE, 1000);
+      HAL_UART_Transmit_DMA(&huart2, error, BUFFER_SIZE);
     } else {
-      HAL_UART_Transmit(&huart2, crypted_data, BUFFER_SIZE, 1000);
+      HAL_UART_Transmit_DMA(&huart2, crypted_data, BUFFER_SIZE);
     }
+    // HAL_UART_Receive_DMA(&huart2, (uint8_t *)iv_data, BUFFER_SIZE + 16);
   }
 }
 
@@ -221,7 +223,6 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     parse_header();
   } else if (state == COMMUNICATING) {
     head->payload_length -= 1;
-    parse_header();
     communicate();
     if (head->payload_length == 0) {
       state = IDLE;
@@ -230,7 +231,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     } else if (head->cmd == ENC) {
       HAL_UART_Receive_DMA(&huart2, data, BUFFER_SIZE);
     } else if (head->cmd == DEC) {
-      HAL_UART_Receive_DMA(&huart2, data, BUFFER_SIZE + 16);
+      HAL_UART_Receive_DMA(&huart2, iv_data, BUFFER_SIZE + 16);
     }
   }
 }
