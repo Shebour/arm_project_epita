@@ -44,6 +44,7 @@ def generate_key(board: Any) -> bool:
 
 def aes_encrypt(board: Any, infile: str, outfile: str) -> bool:
     content = None
+    failed = False
     with open(infile, "r") as f:
         content = f.read()
     if content == None:
@@ -58,20 +59,20 @@ def aes_encrypt(board: Any, infile: str, outfile: str) -> bool:
     board.send_header(1, len(content_list))
     for data in content_list:
         board._write(data.encode())
-        encoded_data.append(board._read(512 + 16).hex())
+        ret = board._read(512 + 16).hex()
+        if ret == "ENCRYPTION ERROR":
+            failed = True
+        encoded_data.append(ret)
 
+    encoded_data = "".join(encoded_data)
     with open(outfile, "w+") as f:
-        for enc in encoded_data:
-            f.write(enc)
-
-    for data, enc_data in zip(content_list, encoded_data):
-        if data.encode().hex() == enc_data:
-            return False
-    return True
+        f.write(encoded_data)
+    return not failed
 
 
 def aes_decrypt(board: Any, infile: str, outfile: str) -> bool:
     content = None
+    failed = False
     with open(infile, "r") as f:
         content = f.read()
     if content == None:
@@ -82,8 +83,16 @@ def aes_decrypt(board: Any, infile: str, outfile: str) -> bool:
     board.send_header(2, len(content_list))
     for data in content_list:
         board._write(bytes.fromhex(data))
-        decoded_data.append(board._read(512).decode())
+        ret = board._read(512)
+        check = ret[:16]
+        print(len(ret))
+        if check.decode() == "DECRYPTION ERROR":
+            print("decode failed")
+            failed = True
+        else:
+            ret = ret.decode()
+            decoded_data.append(ret)
     decoded_data = "".join(decoded_data)
     with open(outfile, "w+") as f:
         f.write(decoded_data[: -board.padding_len])
-    return True
+    return not failed

@@ -70,8 +70,8 @@ uint8_t data[BUFFER_SIZE] = {0};
 uint8_t crypted_data[BUFFER_SIZE] = {0};
 struct header *head = {0};
 __attribute__((section(".reserved"))) uint8_t key[32];
-int key_present = 0;
-uint8_t key_tmp[32] = {0};
+__attribute__((section(".reserved"))) int key_present = 0;
+// uint8_t key_tmp[32] = {0};
 uint8_t iv[16] = {0};
 uint8_t iv_data[16 + BUFFER_SIZE] = {0};
 
@@ -118,9 +118,8 @@ int generate_key() {
 
   mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy, NULL, 0);
 
-  if (mbedtls_ctr_drbg_random_with_add(&ctr_drbg, key_tmp, 32,
-                                       (const unsigned char *)HAL_GetTick(),
-                                       1) != 0) {
+  if (mbedtls_ctr_drbg_random_with_add(
+          &ctr_drbg, key, 32, (const unsigned char *)HAL_GetTick(), 1) != 0) {
     return 0;
   }
   if (mbedtls_ctr_drbg_random_with_add(
@@ -133,7 +132,7 @@ int encrypt() {
   if (!key_present)
     return 0;
   mbedtls_aes_context aes;
-  if (mbedtls_aes_setkey_enc(&aes, key_tmp, KEY_SIZE_BITS)) {
+  if (mbedtls_aes_setkey_enc(&aes, key, KEY_SIZE_BITS)) {
     return 0;
   }
 
@@ -151,7 +150,7 @@ int decrypt() {
   if (!key_present)
     return 0;
   mbedtls_aes_context aes;
-  if (mbedtls_aes_setkey_dec(&aes, key_tmp, KEY_SIZE_BITS)) {
+  if (mbedtls_aes_setkey_dec(&aes, key, KEY_SIZE_BITS)) {
     return 0;
   }
   _memset(iv, 0, 16);
@@ -201,6 +200,7 @@ void communicate() {
     if (!decrypt()) {
       uint8_t error[512] = {0};
       _strncpy((char *)error, "DECRYPTION ERROR", 16);
+      _memset(&error[16], 0, 512 - 16);
       HAL_UART_Transmit_DMA(&huart2, error, BUFFER_SIZE);
     } else {
       HAL_UART_Transmit_DMA(&huart2, crypted_data, BUFFER_SIZE);
