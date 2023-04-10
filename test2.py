@@ -12,11 +12,11 @@ def ready():
 
 b = init_board("/dev/ttyACM0")
 ready()
-r = aes_decrypt(b, "test/file1.enc", "test/file1.out")
+r = aes_encrypt(b, "test/file.in", "test/file.enc")
 assert r == True
 
-with open("test/file1.in") as f:
+with open("test/file.in", "r") as f:
     src = f.read()
-with open("test/file1.out") as f:
+with open("test/file.out", "r") as f:
     dst = f.read()
 assert src == dst
