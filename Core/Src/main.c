@@ -212,10 +212,13 @@ int key_present()
   return 1;
 }
 
-void parse_header()
+int parse_header()
 {
   if (head->cmd == GEN)
   {
+    // HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"OK", 2);
+    return generate_key();
+    /*
     if (!generate_key())
     {
       HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"KO", 2);
@@ -226,26 +229,44 @@ void parse_header()
     }
     state = IDLE;
     HAL_UART_Receive_DMA(&huart2, header_str, 5);
-    HAL_TIM_Base_Start_IT(&htim10);
+    HAL_TIM_Base_Start_IT(&htim10);*/
   }
-  else if (head->cmd == ENC)
+  else if (head->cmd == ENC || head->cmd == DEC)
   {
+    if (head->payload_length == 0 || !key_present())
+    {
+      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"KO", 2);
+      return 0;
+    }
+    else
+    {
+      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"OK", 2);
+      return 1;
+    }
+
+    /*
     state = COMMUNICATING;
     if (key_present())
       HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"OK", 2);
     else
       HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"KO", 2);
-    HAL_UART_Receive_DMA(&huart2, data, BUFFER_SIZE);
+    HAL_UART_Receive_DMA(&huart2, data, BUFFER_SIZE);*/
   }
-  else if (head->cmd == DEC)
+  else
   {
-    state = COMMUNICATING;
-    if (key_present())
-      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"OK", 2);
-    else
-      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"KO", 2);
-    HAL_UART_Receive_DMA(&huart2, iv_data, BUFFER_SIZE + IV_SIZE);
+    HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"KO", 2);
+    return 0;
   }
+  /*
+    else if (head->cmd == DEC)
+    {
+      state = COMMUNICATING;
+      if (key_present())
+        HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"OK", 2);
+      else
+        HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"KO", 2);
+      HAL_UART_Receive_DMA(&huart2, iv_data, BUFFER_SIZE + IV_SIZE);
+    }*/
 }
 
 void communicate()
@@ -280,11 +301,36 @@ void communicate()
   }
 }
 
+void action()
+{
+  if (head->cmd == GEN)
+  {
+    if (!generate_key())
+      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"KO", 2);
+    else
+      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"OK", 2);
+    state = IDLE;
+    HAL_UART_Receive_DMA(&huart2, header_str, 5);
+    HAL_TIM_Base_Start_IT(&htim10);
+  }
+  else if (head->cmd == ENC)
+  {
+    state = COMMUNICATING;
+    HAL_UART_Receive_DMA(&huart2, data, BUFFER_SIZE);
+  }
+  else if (head->cmd == DEC)
+  {
+    state = COMMUNICATING;
+    HAL_UART_Receive_DMA(&huart2, iv_data, BUFFER_SIZE + IV_SIZE);
+  }
+}
+
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
   if (state == IDLE)
   {
     HAL_UART_Receive_DMA(&huart2, header_str, 5);
+    HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"KO", 2);
     return;
   }
 
@@ -293,7 +339,14 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
   if (state == WAITING)
   {
     head = (struct header *)header_str;
-    parse_header();
+    if (parse_header())
+      action();
+    else
+    {
+      state = IDLE;
+      HAL_UART_Receive_DMA(&huart2, header_str, 5);
+      HAL_TIM_Base_Start_IT(&htim10);
+    }
   }
   else if (state == COMMUNICATING)
   {

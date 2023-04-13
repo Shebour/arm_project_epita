@@ -3,7 +3,7 @@ import serial
 
 class Board:
     def __init__(self, tty: str):
-        self.board = serial.Serial(tty, baudrate=115200, bytesize=8, timeout=10)
+        self.board = serial.Serial(tty, baudrate=115200, bytesize=8, timeout=60)
         self.buffer_size = 512
         self.iv_size = 16
 
@@ -22,9 +22,9 @@ class Board:
     def send_header(self, header: int, size: int) -> bool:
         self._write(header.to_bytes(1, "little"))
         self._write(size.to_bytes(4, "little"))
-        response = self._read(2).decode()
-        print(response)
-        if response != "OK":
+        response_header = self._read(2).decode()
+        print(f"Header response: {response_header}")
+        if response_header != "OK":
             return False
         return True
 
@@ -56,6 +56,10 @@ def init_board(tty: str) -> Board:
 def generate_key(board: Board) -> bool:
     print("Key generation")
     ret = board.send_header(0, 0)
+    response_gen = board._read(2).decode()
+    print(f"Gen: {response_gen}")
+    if response_gen != "OK":
+        return False
     return ret
 
 
