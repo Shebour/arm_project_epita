@@ -56,10 +56,6 @@ def init_board(tty: str) -> Board:
 def generate_key(board: Board) -> bool:
     print("Key generation")
     ret = board.send_header(0, 0)
-    response_gen = board._read(2).decode()
-    print(f"Gen: {response_gen}")
-    if response_gen != "OK":
-        return False
     return ret
 
 
@@ -73,11 +69,11 @@ def aes_encrypt(board: Board, infile: str, outfile: str) -> bool:
     if board.send_header(1, len(c_list)) == False:
         return False
 
-    print(c_list)
     for data in c_list:
         board._write(data.encode())
         ret = board._read(board.buffer_size + board.iv_size).hex()
-        if ret == "ENCRYPTION ERROR":
+        if ret[:32] == "454e4352595054494f4e204552524f52":
+            print("encode failed")
             failed = True
         encoded_data.append(ret)
 
@@ -101,6 +97,11 @@ def aes_decrypt(board: Board, infile: str, outfile: str) -> bool:
         raise Exception(f"Fail reading {infile}")
 
     c_list = split_str(content, (board.buffer_size + board.iv_size) * 2)
+    try:
+        bytes.fromhex(c_list[0])
+    except:
+        print(f"Bad content format in {infile}")
+        return False
     decoded_data = []
     if not board.send_header(2, len(c_list)):
         return False

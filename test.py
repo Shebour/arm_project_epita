@@ -5,7 +5,7 @@ from itf import *
 
 
 def ready():
-    print("Press button then any key")
+    print("Press button then Enter")
     sys.stdin.read(1)
 
 

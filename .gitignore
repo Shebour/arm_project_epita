@@ -3,3 +3,5 @@ build
 compile_commands.json
 .gdb_history
 __pycache__
+*.out
+*.enc

@@ -26,7 +26,7 @@
 #include "mbedtls/aes.h"
 #include "mbedtls/ctr_drbg.h"
 #include "mbedtls/entropy.h"
-#include "stm32f4xx_ll_dma.h"
+#include "utils.h"
 
 /* USER CODE END Includes */
 
@@ -77,7 +77,6 @@ struct __attribute__((__packed__)) header
 };
 
 enum STATE state = IDLE;
-UART_HandleTypeDef *huart_cb;
 uint8_t header_str[5] = { 0 };
 uint8_t data[BUFFER_SIZE] = { 0 };
 uint8_t crypted_data[BUFFER_SIZE] = { 0 };
@@ -101,42 +100,7 @@ static void MX_USART2_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-void Write_Flash(uint8_t data[32])
-{
-  HAL_FLASH_Unlock();
-  __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_EOP | FLASH_FLAG_OPERR | FLASH_FLAG_WRPERR
-                         | FLASH_FLAG_PGAERR | FLASH_FLAG_PGSERR);
-  FLASH_Erase_Sector(FLASH_SECTOR_1, VOLTAGE_RANGE_3);
-  uint32_t start_address = 0x8004000;
-  for (int i = 0; i < 32; i++)
-  {
-    HAL_FLASH_Program(TYPEPROGRAM_BYTE, start_address, data[i]);
-    start_address += 1;
-  }
-  HAL_FLASH_Lock();
-}
-void *_memset(void *dest, int val, size_t len)
-{
-  unsigned char *ptr = (unsigned char *)dest;
-  while (len-- > 0)
-    *ptr++ = val;
-  return dest;
-}
-char *_strncpy(char *dest, const char *src, size_t n)
-{
-  if (n == 0)
-    return dest;
-  char *d = dest;
-  const char *s = src;
-  while (n > 0)
-  {
-    *d++ = *s++;
-    n--;
-  }
-  return dest;
-}
-
-int generate_key()
+int generate_random(int key, size_t len)
 {
   mbedtls_ctr_drbg_context ctr_drbg;
   mbedtls_entropy_context entropy;
@@ -147,19 +111,25 @@ int generate_key()
 
   mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy, NULL, 0);
 
-  uint8_t key_tmp[32] = { 0 };
-
-  if (mbedtls_ctr_drbg_random_with_add(&ctr_drbg, key_tmp, 32,
-                                       (const unsigned char *)HAL_GetTick(), 1)
-      != 0)
+  if (key)
   {
-    return 0;
+    uint8_t key_tmp[32] = { 0 };
+
+    if (mbedtls_ctr_drbg_random_with_add(
+            &ctr_drbg, key_tmp, 32, (const unsigned char *)HAL_GetTick(), 1)
+        != 0)
+    {
+      return 0;
+    }
+    Write_Flash(key_tmp);
   }
-  if (mbedtls_ctr_drbg_random_with_add(&ctr_drbg, iv, IV_SIZE,
-                                       (const unsigned char *)HAL_GetTick(), 1)
-      != 0)
-    return 0;
-  Write_Flash(key_tmp);
+  else
+  {
+    if (mbedtls_ctr_drbg_random_with_add(
+            &ctr_drbg, iv, IV_SIZE, (const unsigned char *)HAL_GetTick(), 1)
+        != 0)
+      return 0;
+  }
   return 1;
 }
 
@@ -198,7 +168,6 @@ int decrypt()
     return 0;
   return 1;
 }
-
 int key_present()
 {
   int nb_zeros = 0;
@@ -216,57 +185,34 @@ int parse_header()
 {
   if (head->cmd == GEN)
   {
-    // HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"OK", 2);
-    return generate_key();
-    /*
-    if (!generate_key())
-    {
-      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"KO", 2);
-    }
-    else
-    {
-      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"OK", 2);
-    }
+    if (!generate_random(1, 32))
+      return 0;
+    HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"OK", 2);
     state = IDLE;
     HAL_UART_Receive_DMA(&huart2, header_str, 5);
-    HAL_TIM_Base_Start_IT(&htim10);*/
+    HAL_TIM_Base_Start_IT(&htim10);
   }
-  else if (head->cmd == ENC || head->cmd == DEC)
+  else if (head->cmd == ENC)
   {
-    if (head->payload_length == 0 || !key_present())
+    if (!generate_random(0, IV_SIZE) || head->payload_length == 0
+        || !key_present())
     {
-      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"KO", 2);
       return 0;
     }
-    else
-    {
-      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"OK", 2);
-      return 1;
-    }
 
-    /*
+    HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"OK", 2);
     state = COMMUNICATING;
-    if (key_present())
-      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"OK", 2);
-    else
-      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"KO", 2);
-    HAL_UART_Receive_DMA(&huart2, data, BUFFER_SIZE);*/
+    HAL_UART_Receive_DMA(&huart2, data, BUFFER_SIZE);
   }
-  else
+  else if (head->cmd == DEC)
   {
-    HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"KO", 2);
-    return 0;
+    if (head->payload_length == 0 || !key_present())
+      return 0;
+    HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"OK", 2);
+    state = COMMUNICATING;
+    HAL_UART_Receive_DMA(&huart2, iv_data, BUFFER_SIZE + IV_SIZE);
   }
-  /*
-    else if (head->cmd == DEC)
-    {
-      state = COMMUNICATING;
-      if (key_present())
-        HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"OK", 2);
-      else
-        HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"KO", 2);
-      HAL_UART_Receive_DMA(&huart2, iv_data, BUFFER_SIZE + IV_SIZE);
-    }*/
+  return 1;
 }
 
 void communicate()
@@ -301,30 +247,6 @@ void communicate()
   }
 }
 
-void action()
-{
-  if (head->cmd == GEN)
-  {
-    if (!generate_key())
-      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"KO", 2);
-    else
-      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"OK", 2);
-    state = IDLE;
-    HAL_UART_Receive_DMA(&huart2, header_str, 5);
-    HAL_TIM_Base_Start_IT(&htim10);
-  }
-  else if (head->cmd == ENC)
-  {
-    state = COMMUNICATING;
-    HAL_UART_Receive_DMA(&huart2, data, BUFFER_SIZE);
-  }
-  else if (head->cmd == DEC)
-  {
-    state = COMMUNICATING;
-    HAL_UART_Receive_DMA(&huart2, iv_data, BUFFER_SIZE + IV_SIZE);
-  }
-}
-
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
   if (state == IDLE)
@@ -334,15 +256,13 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
     return;
   }
 
-  HAL_TIM_Base_Stop_IT(&htim11);
-  huart_cb = huart;
   if (state == WAITING)
   {
+    HAL_TIM_Base_Stop_IT(&htim11);
     head = (struct header *)header_str;
-    if (parse_header())
-      action();
-    else
+    if (!parse_header())
     {
+      HAL_UART_Transmit_DMA(&huart2, (uint8_t *)"KO", 2);
       state = IDLE;
       HAL_UART_Receive_DMA(&huart2, header_str, 5);
       HAL_TIM_Base_Start_IT(&htim10);
@@ -413,11 +333,9 @@ int main(void)
 
   /* USER CODE END 1 */
 
-  /* MCU
-   * Configuration--------------------------------------------------------*/
+  /* MCU Configuration--------------------------------------------------------*/
 
-  /* Reset of all peripherals, Initializes the Flash interface and the
-   * Systick.
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick.
    */
   HAL_Init();
 
