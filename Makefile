@@ -183,7 +183,6 @@ CFLAGS += -MMD -MP -MF"$(@:%.o=%.d)"
 #######################################
 # link script
 LDSCRIPT = STM32F401RETx_FLASH.ld
-LDSCRIPT = link_script.ld
 
 # libraries
 LIBS = -lc -lm -lnosys 

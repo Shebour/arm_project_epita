@@ -62,7 +62,9 @@ _Min_Stack_Size = 0x400; /* required amount of stack */
 MEMORY
 {
 RAM (xrw)      : ORIGIN = 0x20000000, LENGTH = 96K
-FLASH (rx)      : ORIGIN = 0x8000000, LENGTH = 512K
+ISR_VECTOR_FLASH (rx) : ORIGIN = 0x8000000, LENGTH = 16K
+RESERVED_FLASH (xrw) : ORIGIN = 0x8004000, LENGTH = 16K
+FLASH (rx)      : ORIGIN = 0x8008000, LENGTH = 512K - 32K
 }
 
 /* Define output sections */
@@ -74,8 +76,14 @@ SECTIONS
     . = ALIGN(4);
     KEEP(*(.isr_vector)) /* Startup code */
     . = ALIGN(4);
-  } >FLASH
+  } >ISR_VECTOR_FLASH
 
+  .reserved :
+  {
+    . = ALIGN(4);
+    KEEP(*(.reserved))
+    . = ALIGN(4);
+  } >RESERVED_FLASH
   /* The program code and other data goes into FLASH */
   .text :
   {
@@ -150,7 +158,7 @@ SECTIONS
   . = ALIGN(4);
   .bss :
   {
-    /* This is used by the startup in order to initialize the .bss secion */
+    /* This is used by the startup in order to initialize the .bss section */
     _sbss = .;         /* define a global symbol at bss start */
     __bss_start__ = _sbss;
     *(.bss)
