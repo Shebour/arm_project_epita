@@ -218,8 +218,11 @@ OBJECTS += $(addprefix $(BUILD_DIR)/,$(notdir $(C_COV_SOURCES:.c=.o)))
 vpath %.c $(sort $(dir $(C_COV_SOURCES)))
 
 $(BUILD_DIR)/%.o: %.c Makefile | $(BUILD_DIR) 
-	@[[ "${C_COV_SOURCES}" == *"$<"* ]] && $(CC) -c $(CFLAGS) $(CFLAGS_COV) -Wa,-a,-ad,-alms=$(BUILD_DIR)/$(notdir $(<:.c=.lst)) $< -o $@ || exit 0
-	@[[ "${C_COV_SOURCES}" == *"$<"* ]] || $(CC) -c $(CFLAGS) -Wa,-a,-ad,-alms=$(BUILD_DIR)/$(notdir $(<:.c=.lst)) $< -o $@
+	if [ -n "$(filter $<,$(C_COV_SOURCES))" ]; then \
+		$(CC) -c $(CFLAGS) $(CFLAGS_COV) -Wa,-a,-ad,-alms=$(BUILD_DIR)/$(notdir $(<:.c=.lst)) $< -o $@; \
+	else \
+		$(CC) -c $(CFLAGS) -Wa,-a,-ad,-alms=$(BUILD_DIR)/$(notdir $(<:.c=.lst)) $< -o $@; \
+	fi
 
 $(BUILD_DIR)/%.o: %.s Makefile | $(BUILD_DIR)
 	$(AS) -c $(CFLAGS) $< -o $@
